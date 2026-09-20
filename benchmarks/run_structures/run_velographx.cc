@@ -3,10 +3,9 @@
 // This adapter intentionally exposes VeloGraphX's mutable storage through
 // BYO's graph-container API without using VeloGraphX's incremental analytics or
 // adaptive execution policy. This keeps the comparison focused on the graph
-// representation itself.
+// representation itself. No VeloGraphX benchmark implementation is modified.
 
 #include <cstddef>
-#include <cstdint>
 #include <functional>
 #include <tuple>
 #include <utility>
@@ -27,18 +26,8 @@ struct VeloGraphX_graph {
   using weight_type = W;
   using edge_type = std::tuple<gbbs::uintE, W>;
 
-  static constexpr bool insertable = true;
-  static constexpr bool supports_get_memory_size = true;
-
   size_t N() const { return graph.vertex_count(); }
   size_t M() const { return graph.edge_count_directed(); }
-
-  gbbs::uintE degree(size_t i) const {
-    gbbs::uintE count = 0;
-    graph.for_each_neighbor(static_cast<velographx::VertexId>(i),
-                            [&](velographx::VertexId) { ++count; });
-    return count;
-  }
 
   template <class F>
   void map_neighbors(size_t i, F f) const {
@@ -62,7 +51,7 @@ struct VeloGraphX_graph {
                             });
   }
 
-  void insert_sorted_batch(std::tuple<uint32_t, uint32_t>* es, size_t n) {
+  void insert_sorted_batch(std::tuple<gbbs::uintE, gbbs::uintE>* es, size_t n) {
     velographx::UpdateBatch batch;
     batch.updates.reserve(n);
     for (size_t i = 0; i < n; ++i) {
@@ -72,7 +61,7 @@ struct VeloGraphX_graph {
     graph.apply(batch);
   }
 
-  void remove_sorted_batch(std::tuple<uint32_t, uint32_t>* es, size_t n) {
+  void remove_sorted_batch(std::tuple<gbbs::uintE, gbbs::uintE>* es, size_t n) {
     velographx::UpdateBatch batch;
     batch.updates.reserve(n);
     for (size_t i = 0; i < n; ++i) {
@@ -87,6 +76,9 @@ struct VeloGraphX_graph {
   VeloGraphX_graph(auto* v_data, size_t n, size_t m,
                    std::function<void()> cleanup, edge_type* e0,
                    vertex_weight_type* vertex_weights = nullptr)
+      // BYO symmetric inputs already contain both adjacency directions. Keep
+      // VeloGraphX in directed-storage mode here so it does not synthesize a
+      // second reverse arc for every input adjacency entry.
       : graph(n, /* directed = */ true),
         deletion_fn(std::move(cleanup)),
         vertex_weights(vertex_weights) {
@@ -147,11 +139,10 @@ struct VeloGraphX_graph {
 
 using graph_impl = VeloGraphX_graph<gbbs::empty>;
 
-// VeloGraphX currently exposes serial per-row iteration. BYO still parallelizes
-// work across vertices; declaring no_parallel_map avoids claiming a native
-// parallel neighbor-map primitive that the container does not provide.
-using graph_api = gbbs::no_parallel_map;
-using graph_t = gbbs::Graph<graph_impl, /* symmetric = */ true, graph_api>;
+// Use BYO's default API so capability detection stays centralized in BYO.
+// Since the adapter does not expose degree(), BYO's configured degree cache is
+// used instead of rescanning a VeloGraphX adjacency row on each degree query.
+using graph_t = gbbs::Graph<graph_impl, /* symmetric = */ true>;
 
 int main(int argc, char* argv[]) {
   gbbs::commandLine P(argc, argv, " [-s] <inFile>");
